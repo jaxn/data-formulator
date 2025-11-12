@@ -13,17 +13,28 @@ class PostgreSQLDataLoader(ExternalDataLoader):
     @staticmethod
     def list_params()  -> List[Dict[str, Any]]:
         params_list = [
-            {"name": "user", "type": "string", "required": True, "default": "postgres", "description": "PostgreSQL username"}, 
+            {"name": "connection_uri", "type": "string", "required": False, "default": "", "description": "PostgreSQL connection URI (e.g., postgresql://user:pass@host:port/db?sslmode=require). If provided, other connection parameters are ignored."}, 
+            {"name": "user", "type": "string", "required": False, "default": "postgres", "description": "PostgreSQL username"}, 
             {"name": "password", "type": "string", "required": False, "default": "", "description": "leave blank for no password"}, 
-            {"name": "host", "type": "string", "required": True, "default": "localhost", "description": "PostgreSQL host"}, 
+            {"name": "host", "type": "string", "required": False, "default": "localhost", "description": "PostgreSQL host"}, 
             {"name": "port", "type": "string", "required": False, "default": "5432", "description": "PostgreSQL port"},
-            {"name": "database", "type": "string", "required": True, "default": "postgres", "description": "PostgreSQL database name"}
+            {"name": "database", "type": "string", "required": False, "default": "postgres", "description": "PostgreSQL database name"}
         ]
         return params_list
 
     @staticmethod
     def auth_instructions() -> str:
-        return "Provide your PostgreSQL connection details. The user must have SELECT permissions on the tables you want to access."
+        return """Provide your PostgreSQL connection details. The user must have SELECT permissions on the tables you want to access.
+
+You can connect using either:
+1. Connection URI (recommended for advanced options):
+   - Format: postgresql://user:password@host:port/database?option1=value1&option2=value2
+   - Example: postgresql://postgres:mypass@localhost:5432/mydb?sslmode=require
+   - Supports all PostgreSQL connection options (sslmode, sslcert, connect_timeout, etc.)
+
+2. Individual parameters (legacy):
+   - Provide host, port, user, password, and database separately
+   - Note: This method does not support advanced options like SSL configuration"""
 
     def __init__(self, params: Dict[str, Any], duck_db_conn: duckdb.DuckDBPyConnection):
         self.params = params
@@ -35,9 +46,25 @@ class PostgreSQLDataLoader(ExternalDataLoader):
             self.duck_db_conn.load_extension("postgres")
             
             # Prepare the connection string for Postgres
-            port = self.params.get('port', '5432')
-            password_part = f" password={self.params.get('password', '')}" if self.params.get('password') else ""
-            attach_string = f"host={self.params['host']} port={port} user={self.params['user']}{password_part} dbname={self.params['database']}"
+            connection_uri = self.params.get('connection_uri', '').strip()
+            
+            if connection_uri:
+                # Use the provided URI directly
+                attach_string = connection_uri
+                # Extract database name from URI for logging
+                database_name = "PostgreSQL"
+                if '/' in connection_uri:
+                    db_part = connection_uri.split('/')[-1]
+                    database_name = db_part.split('?')[0] if '?' in db_part else db_part
+            else:
+                # Build connection string from individual parameters (legacy method)
+                if 'host' not in self.params or 'user' not in self.params or 'database' not in self.params:
+                    raise ValueError("Either 'connection_uri' or all of 'host', 'user', and 'database' must be provided")
+                
+                port = self.params.get('port', '5432')
+                password_part = f" password={self.params.get('password', '')}" if self.params.get('password') else ""
+                attach_string = f"host={self.params['host']} port={port} user={self.params['user']}{password_part} dbname={self.params['database']}"
+                database_name = self.params['database']
             
             # Detach existing postgres connection if it exists 
             try:
@@ -47,7 +74,7 @@ class PostgreSQLDataLoader(ExternalDataLoader):
 
             # Register Postgres connection
             self.duck_db_conn.execute(f"ATTACH '{attach_string}' AS mypostgresdb (TYPE postgres);")
-            print(f"Successfully connected to PostgreSQL database: {self.params['database']}")
+            print(f"Successfully connected to PostgreSQL database: {database_name}")
             
         except Exception as e:
             print(f"Failed to connect to PostgreSQL: {e}")
